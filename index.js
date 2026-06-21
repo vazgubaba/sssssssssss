@@ -34,7 +34,7 @@ client.on('messageCreate', async (message) => {
         
         // ÖZEL YETKİ KONTROLÜ: Mesajı atan kişi senin ID'ne sahip değilse engelle
         if (message.author.id !== SAHIP_ID) {
-            return message.reply('Kaybol buradan!');
+            return message.reply('onu yapaman knk');
         }
 
         const altKomut = args[0]; // ekle veya kaldir
