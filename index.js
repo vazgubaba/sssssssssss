@@ -77,6 +77,9 @@ const PANEL_IMAGE = (process.env.PANEL_IMAGE || BOT_IMAGE_URL).trim();
 const PANEL_AUTHOR = (process.env.PANEL_AUTHOR || "vazgucxn Assistant").trim();
 const FOOTER_TEXT = (process.env.FOOTER_TEXT || "Woopiè • Assistant").trim();
 
+// Ticket panelinde görünecek sunucu adı (örn: "SHADON #V9")
+const SERVER_NAME = (process.env.SERVER_NAME || "SUNUCU ADI").trim();
+
 // FiveM CFX (senin verdiğin)
 const CFX_CODE = (process.env.CFX_CODE || "xjx5kr").trim();
 
@@ -1610,24 +1613,20 @@ if (cmd === "nuke") {
       config.ticketStaffRoleId = ticketStaffRoleId;
       saveJSON(CONFIG_FILE, config);
 
-      // Panel (screenshota benzer)
+      // Panel (görseldeki "Ekip Başvuru" formatı)
       const panelEmbed = createEmbed(guild, {
-        title: "",
-        fields: [
-          { name: `${EMOJI.success} ・ ʙᴀꜱᴠᴜʀᴜ ꜱɪꜱᴛᴇᴍɪ`, value: `${EMOJI.success} ・ ✅`, inline: true },
-          { name: `${EMOJI.info} ・ ʙᴀꜱᴠᴜʀᴜ ʙɪʟɢɪ`, value: `${EMOJI.lock} ・ ᴇʀɪꜱɪᴍ`, inline: true },
-          { name: "\u200b", value: "\u200b", inline: true }
-        ],
+        title: `${EMOJI.info} Ekip Başvuru`,
         description:
-          `${EMOJI.right} ・ Formu doldurduktan sonra bekleyiniz alım sorumlularımız en kısa sürede ilgilenecektir.`,
+          `**${SERVER_NAME}** sunucusunda bir başvuru oluşturmak veya destek almak için aşağıdaki butona tıklayın.\n\n` +
+          `Butona tıkladıktan sonra sizin için özel bir başvuru kanalı açılacak. Sadece yetkililer ve siz ticketi görüntüleyebilirsiniz.`,
         image: PANEL_IMAGE
       });
 
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId("ticket_open")
-          .setStyle(ButtonStyle.Primary)
-          .setLabel("Başvuru yap")
+          .setStyle(ButtonStyle.Danger)
+          .setLabel("Başvuru Oluştur")
           .setEmoji("📝")
       );
 
@@ -2196,17 +2195,3 @@ client.on("roleUpdate", async (oldRole, newRole) => {
 client.login(TOKEN)
   .then(() => console.log("✅ Discord Login OK"))
   .catch((err) => console.error("❌ Discord Login FAIL:", err));
-
-
-
-
-
-
-
-
-
-
-
-
-
-
