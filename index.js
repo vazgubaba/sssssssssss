@@ -81,7 +81,7 @@ const PANEL_IMAGE = (process.env.PANEL_IMAGE || TICKET_BANNER_URL).trim();
 
 // Başlık/Author yazısı
 const PANEL_AUTHOR = (process.env.PANEL_AUTHOR || "vazgucxn Assistant").trim();
-const FOOTER_TEXT = (process.env.FOOTER_TEXT || "Woopiè • Assistant").trim();
+const FOOTER_TEXT = (process.env.FOOTER_TEXT || "Quantès • Assistant").trim();
 
 // FiveM CFX (senin verdiğin)
 const CFX_CODE = (process.env.CFX_CODE || "xjx5kr").trim();
@@ -93,7 +93,7 @@ const NAVY = 0x0b1a3a;
 const EMOJI = {
   settings: "<a:settings:1520165591267414016>",
   success: "<a:success:1520165977227137075>",
-  info: "<:info:1520167364379938896",
+  info: "<:info:1520167364379938896>",
   lock: "<a:lock_key:1520167477030686820>",
   right: "<a:sagok:1520167724355948744>",
   star: "<:yildiz:1520167832678301890>",
@@ -1567,14 +1567,14 @@ if (cmd === "setup") {
   });
 
   const logs = [
-    { name: "🔨・ban-log", key: "banLog" },
-    { name: "👢・kick-log", key: "kickLog" },
-    { name: "🗑️・mesaj-log", key: "msgLog" },
-    { name: "📛・rol-log", key: "roleLog" },
-    { name: "📁・kanal-log", key: "channelLog" },
-    { name: "🎟️・ticket-log", key: "ticketLog" },
-    { name: "🔊・ses-log", key: "voiceLog" },
-    { name: "⚙️・bot-log", key: "botLog" }
+    { name: "🛡️・ban-log", key: "banLog" },
+    { name: "🛡️・kick-log", key: "kickLog" },
+    { name: "🛡️・mesaj-log", key: "msgLog" },
+    { name: "🛡️・rol-log", key: "roleLog" },
+    { name: "🛡️・kanal-log", key: "channelLog" },
+    { name: "🛡️・ticket-log", key: "ticketLog" },
+    { name: "🛡️・ses-log", key: "voiceLog" },
+    { name: "🛡️・bot-log", key: "botLog" }
   ];
 
   if (!config.logs) config.logs = {};
@@ -1594,9 +1594,9 @@ if (cmd === "setup") {
   return replyE(
     message,
     createEmbed(guild, {
-      title: `${EMOJI.success} ・ ꜱᴇᴛᴜᴘ ᴛᴀᴍᴀᴍ`,
+      title: `${EMOJI.success} ・ setup fix knk`,
       description:
-        `${EMOJI.settings} ・ Log kanalları başarıyla kuruldu.\n\n` +
+        `${EMOJI.settings} ・ Log kanalları başarıyla kuruldu knk.\n\n` +
         `${EMOJI.right} ・ Toplam: **${logs.length} kanal**`
     })
   );
