@@ -90,6 +90,7 @@ const CFX_CODE = (process.env.CFX_CODE || "xjx5kr").trim();
 const NAVY = 0x0b1a3a;
 
 // ===================== EMOJİLER (SENİN ÖZEL SET) =====================
+
 const EMOJI = {
   settings: "<a:settings:1520165591267414016>",
   success: "<a:success:1520165977227137075>",
@@ -141,6 +142,27 @@ const isStaff = (id) => isOwner(id) || STAFF_IDS.has(id);
 // ===================== DATA / CONFIG =====================
 const DATA_DIR = path.join(__dirname, "data");
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
+// .yetkili komutuyla eklenenler diskten yüklenir (kalıcı) — DATA_DIR hazır olduktan sonra
+const STAFF_FILE = path.join(DATA_DIR, "staff.json");
+function loadStaffFile() {
+  try {
+    if (fs.existsSync(STAFF_FILE)) {
+      const arr = JSON.parse(fs.readFileSync(STAFF_FILE, "utf8"));
+      if (Array.isArray(arr)) arr.forEach((id) => STAFF_IDS.add(String(id)));
+    }
+  } catch (e) {
+    console.error("staff.json okunamadı:", e);
+  }
+}
+function saveStaffFile() {
+  try {
+    fs.writeFileSync(STAFF_FILE, JSON.stringify(Array.from(STAFF_IDS), null, 2));
+  } catch (e) {
+    console.error("staff.json yazılamadı:", e);
+  }
+}
+loadStaffFile();
 
 const CONFIG_FILE = path.join(DATA_DIR, "config.json");
 const INV_FILE = path.join(DATA_DIR, "envanter.json");
@@ -985,18 +1007,18 @@ if (i.customId === "ticket_open") {
 > **_Gelişmiş map bilgin var mı?:_**
 > **_Referansın var mı?:_**
 > **_En az 5/10 adet kill POV (zorunlu):_**
-> **_Well Banlı mısın?:_**`;
+> **_MDRP Banlı mısın?:_**`;
 
   await ch.send({
     content: `<@${i.user.id}> | <@&${ticketStaffRoleId}>`,
     embeds: [
       {
-        title: "Quantes Başvuru",
+        title: "Quantès Başvuru",
         description: `Aşağıdaki butona tıklayarak başvuru oluşturabilirsiniz.\n\n${basvuruFormu}`,
         color: 0x2f3136, // Koyu gri/siyah tonu (şık durur)
         thumbnail: { url: THUMB_URL },
         image: { url: TICKET_BANNER_URL },
-        footer: { text: "Quantes" }
+        footer: { text: "Quantès" }
       }
     ],
     components: [row]
@@ -1061,7 +1083,7 @@ if (i.customId === "ticket_open") {
 
   if (data.users.length >= data.limit) {
     data.closed = true;
-    return i.editReply("🔒 Sınır doldu.");
+    return i.editReply("🔒 Kontenjan doldu.");
   }
 
   data.users.push(i.user.id);
@@ -1109,7 +1131,7 @@ if (i.customId === "ticket_open") {
       ]
     });
 
-    return i.editReply("✅ Son kontenjan alındı!");
+    return i.editReply("✅ Son adam alındı!");
   }
 
   await msg.edit({
@@ -1131,15 +1153,15 @@ if (i.customId === "ticket_open") {
       if (data.users.includes(i.user.id)) return i.editReply("⚠️ Zaten katıldın.");
 
       if (data.users.length >= data.limit) {
-        await closeIngame(guild, msgId, "Kontenjan doldu");
-        return i.editReply("🔒 Kontenjan doldu.");
+        await closeIngame(guild, msgId, "Alım doldu");
+        return i.editReply("🔒 Alımlar doldu.");
       }
 
       data.users.push(i.user.id);
 
       if (data.users.length >= data.limit) {
         await closeIngame(guild, msgId, "Kontenjan doldu");
-        return i.editReply("✅ Katıldın! (Son kontenjan, alımlar şimdi kapandı)");
+        return i.editReply("✅ Katıldın! (Son katılım, alımlar şimdi kapandı)");
       }
 
       await refreshIngameMessage(guild, msgId);
@@ -1372,7 +1394,8 @@ if (cmd === "rollimit") {
       "basvurupanel",
       "otyetki",
       "otreset",
-      "otlogkur"
+      "otlogkur",
+      "yetkili"
     ]);
 
     if (!PUBLIC.has(cmd)) {
@@ -1469,6 +1492,97 @@ if (cmd === "whitelist") {
       `${line(EMOJI.right, `${PREFIX}whitelist liste`)}`
   }));
 }
+
+// ===================== YETKİLİ (STAFF) EKLE/KALDIR =====================
+// Kullanım: .yetkili @kullanıcı ekle   veya   .yetkili @kullanıcı kaldır
+// Eklenen kişi .bakim hariç botun tüm komutlarını kullanabilir.
+if (cmd === "yetkili") {
+  if (!isOwner(userId)) {
+    return replyE(message, createEmbed(guild, {
+      title: `${EMOJI.lock} ・ ʏᴇᴛᴋɪ ʏᴏᴋ`,
+      description: `${EMOJI.warn} ・ Sadece owner kullanabilir.`
+    }));
+  }
+
+  const sub = args.find((a) => a === "ekle" || a === "kaldır" || a === "kaldir" || a === "liste");
+  const member = message.mentions.users.first();
+
+  if (sub === "liste") {
+    if (STAFF_IDS.size === 0) {
+      return replyE(message, createEmbed(guild, {
+        title: `${EMOJI.crown} ・ ʏᴇᴛᴋɪʟɪʟᴇʀ`,
+        description: `${EMOJI.warn} ・ Henüz yetkili eklenmemiş.`
+      }));
+    }
+
+    const list = Array.from(STAFF_IDS)
+      .map((id, idx) => `**${idx + 1}.** <@${id}> \`(${id})\``)
+      .join("\n");
+
+    return replyE(message, createEmbed(guild, {
+      title: `${EMOJI.crown} ・ ʏᴇᴛᴋɪʟɪʟᴇʀ (${STAFF_IDS.size})`,
+      description: list
+    }));
+  }
+
+  if (!member) {
+    return replyE(message, createEmbed(guild, {
+      title: `${EMOJI.info} ・ ᴋᴜʟʟᴀɴɪᴍ`,
+      description:
+        `${line(EMOJI.right, `${PREFIX}yetkili @kullanıcı ekle`)}\n` +
+        `${line(EMOJI.right, `${PREFIX}yetkili @kullanıcı kaldır`)}\n` +
+        `${line(EMOJI.right, `${PREFIX}yetkili liste`)}`
+    }));
+  }
+
+  if (isOwner(member.id)) {
+    return replyE(message, createEmbed(guild, {
+      title: `${EMOJI.info} ・ ʙɪʟɢɪ`,
+      description: `${EMOJI.info} ・ ${member} zaten owner, ekstra yetki gerekmiyor.`
+    }));
+  }
+
+  if (sub === "ekle") {
+    STAFF_IDS.add(member.id);
+    saveStaffFile();
+
+    return replyE(message, createEmbed(guild, {
+      title: `${EMOJI.success} ・ ʏᴇᴛᴋɪʟɪ ᴇᴋʟᴇɴᴅɪ`,
+      description:
+        `${EMOJI.success} ・ ${member} yetkili olarak eklendi.\n` +
+        `${EMOJI.info} ・ \`${PREFIX}bakim\` hariç tüm komutları kullanabilir.`
+    }));
+  }
+
+  if (sub === "kaldır" || sub === "kaldir") {
+    STAFF_IDS.delete(member.id);
+    saveStaffFile();
+
+    return replyE(message, createEmbed(guild, {
+      title: `${EMOJI.trash} ・ ʏᴇᴛᴋɪʟɪ ᴋᴀʟᴅɪʀɪʟᴅɪ`,
+      description: `${EMOJI.warn} ・ ${member} yetkili listesinden çıkarıldı.`
+    }));
+  }
+
+  return replyE(message, createEmbed(guild, {
+    title: `${EMOJI.info} ・ ᴋᴜʟʟᴀɴɪᴍ`,
+    description:
+      `${line(EMOJI.right, `${PREFIX}yetkili @kullanıcı ekle`)}\n` +
+      `${line(EMOJI.right, `${PREFIX}yetkili @kullanıcı kaldır`)}\n` +
+      `${line(EMOJI.right, `${PREFIX}yetkili liste`)}`
+  }));
+}
+
+    // ===================== ŞAKA: PATLAT =====================
+    if (cmd === "patlat") {
+      const m = await message.channel.send("💣 **3**");
+      await new Promise((r) => setTimeout(r, 1000));
+      await m.edit("💣 **2**");
+      await new Promise((r) => setTimeout(r, 1000));
+      await m.edit("💣 **1**");
+      await new Promise((r) => setTimeout(r, 1000));
+      await m.edit("🤣 **şaka la yarram** 🤣");
+    }
 
     // ===================== PING =====================
     if (cmd === "ping") {
@@ -1567,14 +1681,14 @@ if (cmd === "setup") {
   });
 
   const logs = [
-    { name: "🛡️・ban-log", key: "banLog" },
-    { name: "🛡️・kick-log", key: "kickLog" },
-    { name: "🛡️・mesaj-log", key: "msgLog" },
-    { name: "🛡️・rol-log", key: "roleLog" },
-    { name: "🛡️・kanal-log", key: "channelLog" },
-    { name: "🛡️・ticket-log", key: "ticketLog" },
-    { name: "🛡️・ses-log", key: "voiceLog" },
-    { name: "🛡️・bot-log", key: "botLog" }
+    { name: "🔨・ban-log", key: "banLog" },
+    { name: "👢・kick-log", key: "kickLog" },
+    { name: "🗑️・mesaj-log", key: "msgLog" },
+    { name: "📛・rol-log", key: "roleLog" },
+    { name: "📁・kanal-log", key: "channelLog" },
+    { name: "🎟️・ticket-log", key: "ticketLog" },
+    { name: "🔊・ses-log", key: "voiceLog" },
+    { name: "⚙️・bot-log", key: "botLog" }
   ];
 
   if (!config.logs) config.logs = {};
@@ -1594,9 +1708,9 @@ if (cmd === "setup") {
   return replyE(
     message,
     createEmbed(guild, {
-      title: `${EMOJI.success} ・ setup fix knk`,
+      title: `${EMOJI.success} ・ ꜱᴇᴛᴜᴘ ᴛᴀᴍᴀᴍ`,
       description:
-        `${EMOJI.settings} ・ Log kanalları başarıyla kuruldu knk.\n\n` +
+        `${EMOJI.settings} ・ Log kanalları başarıyla kuruldu.\n\n` +
         `${EMOJI.right} ・ Toplam: **${logs.length} kanal**`
     })
   );
@@ -1781,6 +1895,13 @@ if (cmd === "nuke") {
             `${line(EMOJI.right, `${PREFIX}guardpanel`)}\n` +
             `${line(EMOJI.right, `${PREFIX}whitelist @kullanıcı ekle/kaldır`)}\n` +
             `${line(EMOJI.right, `${PREFIX}whitelist liste`)}\n\n` +
+
+            `**${line(EMOJI.crown, "ʏᴇᴛᴋɪʟɪ (ꜱᴛᴀꜰꜰ)")}**\n` +
+            `${line(EMOJI.right, `${PREFIX}yetkili @kullanıcı ekle/kaldır`)}\n` +
+            `${line(EMOJI.right, `${PREFIX}yetkili liste`)}\n\n` +
+
+            `**${line(EMOJI.star, "şᴀᴋᴀ")}**\n` +
+            `${line(EMOJI.right, `${PREFIX}patlat`)}\n\n` +
 
             `**${line(EMOJI.shield, "ᴍᴏᴅ")}**\n` +
             `${line(EMOJI.right, `${PREFIX}sil 10`)}\n` +
@@ -2581,3 +2702,17 @@ client.on("roleUpdate", async (oldRole, newRole) => {
 client.login(TOKEN)
   .then(() => console.log("✅ Discord Login OK"))
   .catch((err) => console.error("❌ Discord Login FAIL:", err));
+
+
+
+
+
+
+
+
+
+
+
+
+
+
