@@ -66,19 +66,22 @@ const isOwner = (id) => OWNER_IDS.includes(id);
 
 
 // Görsel TEK NOKTA: bunu değiştirince her embed/panel resmi değişsin
+// Normal mesajlarda (thumbnail / sağ üst köşe) kullanılan logo
 const BOT_IMAGE_URL =
   (process.env.BOT_IMAGE_URL || process.env.BOT_IMAGE || "").trim() ||
-  "https://media.discordapp.net/attachments/1464697274692010137/1471608248544137407/giphy.gif?ex=698f8d7b&is=698e3bfb&hm=498dd45fbafc43408085520ec28979db587085cf2b10d13c798167101541210e&=";
+  "https://media.discordapp.net/attachments/1520142839244128413/1520151994071908463/content.png?ex=6a40275e&is=6a3ed5de&hm=3feb81b5ab6feb1502c085c1ba7ff0542468b998ecec65bcbbdf398ad7554f2b&=&format=webp&quality=lossless&width=960&height=960";
+
+// Ticket panel / ticket embedlerinde kullanılan geniş banner
+const TICKET_BANNER_URL =
+  (process.env.TICKET_BANNER_URL || "").trim() ||
+  "https://media.discordapp.net/attachments/1520142839244128413/1520152417642217564/content.png?ex=6a4027c3&is=6a3ed643&hm=3a9daf454e7c093bc20c37067aad55c45cac8961d44e7e160de6a6e331af6a09&=&format=webp&quality=lossless&width=1872&height=749";
 
 const THUMB_URL = (process.env.THUMB_URL || BOT_IMAGE_URL).trim();
-const PANEL_IMAGE = (process.env.PANEL_IMAGE || BOT_IMAGE_URL).trim();
+const PANEL_IMAGE = (process.env.PANEL_IMAGE || TICKET_BANNER_URL).trim();
 
 // Başlık/Author yazısı
 const PANEL_AUTHOR = (process.env.PANEL_AUTHOR || "vazgucxn Assistant").trim();
 const FOOTER_TEXT = (process.env.FOOTER_TEXT || "Woopiè • Assistant").trim();
-
-// Ticket panelinde görünecek sunucu adı (örn: "SHADON #V9")
-const SERVER_NAME = (process.env.SERVER_NAME || "SUNUCU ADI").trim();
 
 // FiveM CFX (senin verdiğin)
 const CFX_CODE = (process.env.CFX_CODE || "xjx5kr").trim();
@@ -88,31 +91,31 @@ const NAVY = 0x0b1a3a;
 
 // ===================== EMOJİLER (SENİN ÖZEL SET) =====================
 const EMOJI = {
-  settings: "<a:Settings:1462101523533398046>",
-  success: "<a:onay:1462114135453208863>",
-  info: "<:info:1462113831622021151>",
-  lock: "<a:lock_key:1457137947621982403>",
-  right: "<a:sagok:1462379309942440019>",
-  star: "<a:yildiz:1462380028594749450>",
-  warn: "<:uyari1:1462381127330168999>",
+  settings: "<a:settings:1520165591267414016>",
+  success: "<a:success:1520165977227137075>",
+  info: "<:info:1520167364379938896",
+  lock: "<a:lock_key:1520167477030686820>",
+  right: "<a:sagok:1520167724355948744>",
+  star: "<:yildiz:1520167832678301890>",
+  warn: "<a:uyari1:1520167965343879328>",
 
-  ban: "<a:ban:1462382043689127986>",
-  kick: "<:Personkick:1462382349772656837>",
-  trash: "<:Trash:1462382687615713362>",
-  shield: "<:Blue:1462382912635666492>",
+  ban: "<:ban:1520168371096649728>",
+  kick: "<:ban:1520168371096649728>",
+  trash: "<:trash:1520169243314753547>",
+  shield: "<:shield:1520169561683394761>",
 
-  weed: "<:weed:1462383134887903284>",
-  box: "<:emojigg_box:1462383526233247838>",
-  crown: "<:BlueCrown:1462383781724946493>",
-  refresh: "<:Refresh:1462384050537889944>",
+  weed: "<:weed:1520169653358428351>",
+  box: "<:box:1520169843452543169>",
+  crown: "<a:crown:1520169978609799258>",
+  refresh: "<:refresh:1520170092975882260>",
 
-  headphones: "<:Spotify_Headphones:1462384349336043562>",
-  muted: "<:muted:1462384527556219091>",
-  unmute: "<:unmute:1462384694636056577>",
-  move: "<a:sagok:1462379309942440019>",
+  headphones: "<:headphones:1520170199368601710>",
+  muted: "<:muted:1520170268524281866>",
+  unmute: "<:unmute:1520170332659646564>",
+  move: "<a:sagok:1520167724355948744>",
 
-  search: "<:Search:1462385030985941056>",
-  fivem: "<:FiveM:1457139814192251064>"
+  search: "<:search:1520171230009753770>",
+  fivem: "<:fivem:1520171196518240546>"
 };
 
 // ===================== YETKİ =====================
@@ -203,6 +206,126 @@ async function sendE(channel, embed, components) {
   return channel.send({ embeds: [embed], components: components || [] }).catch(() => {});
 }
 
+// ===================== INGAME (KATIL/AYRIL/İPTAL) HELPERS =====================
+// "2 saat", "30 dakika", "1g 2sa", "45dk" gibi süre metinlerini ms'e çevirir
+function parseDurationToMs(text) {
+  if (!text) return null;
+  const t = String(text).toLowerCase().replace(",", ".");
+
+  let totalMs = 0;
+  let matched = false;
+
+  const dayMatch = t.match(/(\d+(?:\.\d+)?)\s*(g|gün|gun|d|day)\b/);
+  const hourMatch = t.match(/(\d+(?:\.\d+)?)\s*(sa|saat|h|hr|hour)\b/);
+  const minMatch = t.match(/(\d+(?:\.\d+)?)\s*(dk|dak|dakika|m|min)\b/);
+
+  if (dayMatch) { totalMs += parseFloat(dayMatch[1]) * 86400000; matched = true; }
+  if (hourMatch) { totalMs += parseFloat(hourMatch[1]) * 3600000; matched = true; }
+  if (minMatch) { totalMs += parseFloat(minMatch[1]) * 60000; matched = true; }
+
+  if (matched) return totalMs;
+
+  // Sadece sayı verildiyse dakika say
+  const onlyNum = t.match(/^(\d+(?:\.\d+)?)$/);
+  if (onlyNum) return parseFloat(onlyNum[1]) * 60000;
+
+  return null;
+}
+
+function formatRemaining(ms) {
+  if (ms <= 0) return "Süre doldu";
+  const totalMin = Math.ceil(ms / 60000);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  if (h > 0 && m > 0) return `${h} saat ${m} dakika sonra`;
+  if (h > 0) return `${h} saat sonra`;
+  return `${m} dakika sonra`;
+}
+
+function ingameRows(closed) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("ingame_join")
+      .setLabel("Katıl")
+      .setStyle(ButtonStyle.Success)
+      .setEmoji("✅")
+      .setDisabled(!!closed),
+    new ButtonBuilder()
+      .setCustomId("ingame_leave")
+      .setLabel("Ayrıl")
+      .setStyle(ButtonStyle.Danger)
+      .setEmoji("🚪")
+      .setDisabled(!!closed),
+    new ButtonBuilder()
+      .setCustomId("ingame_info")
+      .setLabel("Bilgi")
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji("ℹ️"),
+    new ButtonBuilder()
+      .setCustomId("ingame_cancel")
+      .setLabel("İPTAL ET")
+      .setStyle(ButtonStyle.Danger)
+      .setEmoji("🔴")
+      .setDisabled(!!closed)
+  );
+}
+
+function ingameEmbed(guild, data) {
+  const list = data.users.length
+    ? data.users.map((id, idx) => `**${idx + 1}.** <@${id}> \`${id}\``).join("\n")
+    : `${EMOJI.warn} ・ Henüz katılan yok.`;
+
+  const remaining = data.endsAt ? data.endsAt - Date.now() : null;
+
+  return createEmbed(guild, {
+    title: `${EMOJI.star} ・ ${data.title}`,
+    description:
+      `\`[ MAIN KADRO: ${data.users.length} / ${data.limit} ]\`\n\n` +
+      `${EMOJI.info} ・ **Süre:** ${data.closed ? "Kapandı" : (remaining !== null ? formatRemaining(remaining) : "Belirsiz")}\n\n` +
+      `${EMOJI.right} ・ **Katılımcılar**\n` +
+      list,
+    image: TICKET_BANNER_URL
+  });
+}
+
+async function refreshIngameMessage(guild, msgId) {
+  const data = ingameList.get(msgId);
+  if (!data) return;
+  const channel = guild.channels.cache.get(data.channelId);
+  if (!channel) return;
+  const msg = await channel.messages.fetch(msgId).catch(() => null);
+  if (!msg) return;
+  await msg.edit({
+    embeds: [ingameEmbed(guild, data)],
+    components: [ingameRows(data.closed)]
+  }).catch(() => {});
+}
+
+async function closeIngame(guild, msgId, reason) {
+  const data = ingameList.get(msgId);
+  if (!data || data.closed) return;
+
+  data.closed = true;
+  if (data.timer) {
+    clearTimeout(data.timer);
+    data.timer = null;
+  }
+
+  await refreshIngameMessage(guild, msgId);
+
+  const channel = guild.channels.cache.get(data.channelId);
+  if (channel) {
+    await channel.send({
+      embeds: [
+        createEmbed(guild, {
+          title: `${EMOJI.lock} ・ ᴀʟɪᴍʟᴀʀ ᴋᴀᴘᴀɴᴅɪ`,
+          description: `${EMOJI.info} ・ **${data.title}** için alımlar kapanmıştır.\n${EMOJI.right} ・ Sebep: **${reason}**`
+        })
+      ]
+    }).catch(() => {});
+  }
+}
+
 async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -288,7 +411,11 @@ function ensureUser(id) {
   if (typeof envanter[id].ot !== "number") envanter[id].ot = 0;
 }
 // ===================== WHITELIST =====================
-const whitelist = new Set();
+const WHITELIST_FILE = path.join(DATA_DIR, "whitelist.json");
+const whitelist = new Set(loadJSON(WHITELIST_FILE, []));
+function saveWhitelist() {
+  saveJSON(WHITELIST_FILE, Array.from(whitelist));
+}
 // ===================== FORCE BAN =====================
 const forceBans = new Set();
 
@@ -325,6 +452,7 @@ const aktiflikList = new Map(); // messageId => Set(userId)
 let maintenanceMode = false;
 const ticketOwners = new Map();      // channelId -> openerId
 const etkinlikList = new Map(); 
+const ingameList = new Map();        // messageId -> {title, limit, users:[], durationMs, endsAt, timer, closed, channelId}
 const voiceBlockedUsers = new Set(); // ses yasak list
 // ===================== GUARD SYSTEM (SIFIRDAN) =====================
 
@@ -359,9 +487,9 @@ function saveGuard() {
   saveJSON(GUARD_FILE, guardConfig);
 }
 
-// Sadece owner muaf (başka kimse değil)
+// Owner VEYA whitelist'te olanlar muaf
 function isGuardOwner(id) {
-  return isOwner(id); // OWNER_IDS içinde olanlar
+  return isOwner(id) || whitelist.has(id);
 }
 
 // Sayac state: guildId => { userId => {ban,kick,channel,role, lastReset} }
@@ -439,7 +567,8 @@ function guardPanelEmbed(guild) {
       `${EMOJI.kick} ・ Kick Limit: **${kickL}**\n` +
       `${EMOJI.trash} ・ Kanal Silme Limit: **${chL}**\n` +
       `${EMOJI.crown} ・ Rol Silme Limit: **${roleL}**\n\n` +
-      `${EMOJI.right} ・ Komutlar: \`${PREFIX}banlimit\` \`${PREFIX}kicklimit\` \`${PREFIX}kanallimit\` \`${PREFIX}rollimit\` \`${PREFIX}guardpanel\``,
+      `${EMOJI.shield} ・ **Whitelist:** ${whitelist.size} kişi (guard'dan muaf)\n\n` +
+      `${EMOJI.right} ・ Komutlar: \`${PREFIX}banlimit\` \`${PREFIX}kicklimit\` \`${PREFIX}kanallimit\` \`${PREFIX}rollimit\` \`${PREFIX}guardpanel\` \`${PREFIX}whitelist\``,
     image: BOT_IMAGE_URL
   });
 }
@@ -856,16 +985,18 @@ if (i.customId === "ticket_open") {
 > **_Gelişmiş map bilgin var mı?:_**
 > **_Referansın var mı?:_**
 > **_En az 5/10 adet kill POV (zorunlu):_**
-> **_MDRP Banlı mısın?:_**`;
+> **_Well Banlı mısın?:_**`;
 
   await ch.send({
     content: `<@${i.user.id}> | <@&${ticketStaffRoleId}>`,
     embeds: [
       {
-        title: "Woopiè Başvuru",
+        title: "Quantes Başvuru",
         description: `Aşağıdaki butona tıklayarak başvuru oluşturabilirsiniz.\n\n${basvuruFormu}`,
         color: 0x2f3136, // Koyu gri/siyah tonu (şık durur)
-        footer: { text: "Woopiè" }
+        thumbnail: { url: THUMB_URL },
+        image: { url: TICKET_BANNER_URL },
+        footer: { text: "Quantes" }
       }
     ],
     components: [row]
@@ -930,7 +1061,7 @@ if (i.customId === "ticket_open") {
 
   if (data.users.length >= data.limit) {
     data.closed = true;
-    return i.editReply("🔒 Kontenjan doldu.");
+    return i.editReply("🔒 Sınır doldu.");
   }
 
   data.users.push(i.user.id);
@@ -986,6 +1117,95 @@ if (i.customId === "ticket_open") {
   });
 
   return i.editReply("✅ Katılım alındı.");
+    }
+
+    // ===================== INGAME: KATIL =====================
+    if (i.customId === "ingame_join") {
+      await i.deferReply({ flags: 64 });
+
+      const msgId = i.message.id;
+      const data = ingameList.get(msgId);
+
+      if (!data) return i.editReply("❌ Bu panel artık aktif değil.");
+      if (data.closed) return i.editReply("🔒 Alımlar kapanmıştır.");
+      if (data.users.includes(i.user.id)) return i.editReply("⚠️ Zaten katıldın.");
+
+      if (data.users.length >= data.limit) {
+        await closeIngame(guild, msgId, "Kontenjan doldu");
+        return i.editReply("🔒 Kontenjan doldu.");
+      }
+
+      data.users.push(i.user.id);
+
+      if (data.users.length >= data.limit) {
+        await closeIngame(guild, msgId, "Kontenjan doldu");
+        return i.editReply("✅ Katıldın! (Son kontenjan, alımlar şimdi kapandı)");
+      }
+
+      await refreshIngameMessage(guild, msgId);
+      return i.editReply(`✅ Katıldın! Sıran: **${data.users.length}**`);
+    }
+
+    // ===================== INGAME: AYRIL =====================
+    if (i.customId === "ingame_leave") {
+      await i.deferReply({ flags: 64 });
+
+      const msgId = i.message.id;
+      const data = ingameList.get(msgId);
+
+      if (!data) return i.editReply("❌ Bu panel artık aktif değil.");
+      if (!data.users.includes(i.user.id)) return i.editReply("⚠️ Listede değilsin.");
+
+      data.users = data.users.filter((id) => id !== i.user.id);
+
+      // Kontenjan doluyken birisi ayrılırsa ve daha önce kapanmışsa, yer açıldığı için tekrar aç
+      if (data.closed && data.users.length < data.limit && data.endsAt && data.endsAt > Date.now()) {
+        data.closed = false;
+      }
+
+      await refreshIngameMessage(guild, msgId);
+      return i.editReply("🚪 Listeden ayrıldın.");
+    }
+
+    // ===================== INGAME: BİLGİ =====================
+    if (i.customId === "ingame_info") {
+      const msgId = i.message.id;
+      const data = ingameList.get(msgId);
+
+      if (!data) return i.reply({ content: "❌ Bu panel artık aktif değil.", flags: 64 });
+
+      const remaining = data.endsAt ? data.endsAt - Date.now() : null;
+
+      return i.reply({
+        embeds: [
+          createEmbed(guild, {
+            title: `${EMOJI.info} ・ ɪɴɢᴀᴍᴇ ʙɪʟɢɪ`,
+            description:
+              `${EMOJI.star} ・ Etkinlik: **${data.title}**\n` +
+              `${EMOJI.right} ・ Kadro: **${data.users.length} / ${data.limit}**\n` +
+              `${EMOJI.warn} ・ Durum: **${data.closed ? "Kapalı" : "Açık"}**\n` +
+              `${EMOJI.settings} ・ Süre: **${data.closed ? "Kapandı" : (remaining !== null ? formatRemaining(remaining) : "Belirsiz")}**`
+          })
+        ],
+        flags: 64
+      });
+    }
+
+    // ===================== INGAME: İPTAL ET =====================
+    if (i.customId === "ingame_cancel") {
+      const isAdmin = i.member.permissions.has(PermissionsBitField.Flags.Administrator);
+      if (!isStaff(i.user.id) && !isAdmin) {
+        return i.reply({ content: "❌ Bu işlemi yapma yetkin yok.", flags: 64 });
+      }
+
+      await i.deferReply({ flags: 64 });
+
+      const msgId = i.message.id;
+      const data = ingameList.get(msgId);
+      if (!data) return i.editReply("❌ Bu panel artık aktif değil.");
+
+      await closeIngame(guild, msgId, `Yetkili tarafından iptal edildi (<@${i.user.id}>)`);
+      return i.editReply("🔴 Panel iptal edildi.");
     }
 
   } catch (err) {
@@ -1178,25 +1398,76 @@ if (cmd === "rollimit") {
         }
       }
     }
-if (cmd === "whitelist" && args[0] === "ekle") {
-  if (!GUARD_OWNERS.includes(message.author.id)) return;
+// ===================== WHITELIST (GUARD MUAFİYETİ) =====================
+// Kullanım: .whitelist @kullanıcı ekle   veya   .whitelist ekle @kullanıcı
+if (cmd === "whitelist") {
+  if (!GUARD_OWNERS.includes(message.author.id)) {
+    return replyE(message, createEmbed(guild, {
+      title: `${EMOJI.lock} ・ ʏᴇᴛᴋɪ ʏᴏᴋ`,
+      description: `${EMOJI.warn} ・ Sadece owner kullanabilir.`
+    }));
+  }
 
+  const sub = args.find((a) => a === "ekle" || a === "kaldır" || a === "kaldir" || a === "liste");
   const member = message.mentions.users.first();
-  if (!member) return message.reply("Bir kullanıcı etiketle.");
 
-  whitelist.add(member.id);
+  // ===== LİSTE =====
+  if (sub === "liste") {
+    if (whitelist.size === 0) {
+      return replyE(message, createEmbed(guild, {
+        title: `${EMOJI.shield} ・ ᴡʜɪᴛᴇʟɪꜱᴛ`,
+        description: `${EMOJI.warn} ・ Whitelist boş.`
+      }));
+    }
 
-  return message.reply(`✅ ${member.tag} whitelist'e eklendi.`);
-}
-if (cmd === "whitelist" && args[0] === "kaldır") {
-  if (!GUARD_OWNERS.includes(message.author.id)) return;
+    const list = Array.from(whitelist)
+      .map((id, idx) => `**${idx + 1}.** <@${id}> \`(${id})\``)
+      .join("\n");
 
-  const member = message.mentions.users.first();
-  if (!member) return message.reply("Bir kullanıcı etiketle.");
+    return replyE(message, createEmbed(guild, {
+      title: `${EMOJI.shield} ・ ᴡʜɪᴛᴇʟɪꜱᴛ (${whitelist.size})`,
+      description: list
+    }));
+  }
 
-  whitelist.delete(member.id);
+  // ===== EKLE / KALDIR için kullanıcı şart =====
+  if (!member) {
+    return replyE(message, createEmbed(guild, {
+      title: `${EMOJI.info} ・ ᴋᴜʟʟᴀɴɪᴍ`,
+      description:
+        `${line(EMOJI.right, `${PREFIX}whitelist @kullanıcı ekle`)}\n` +
+        `${line(EMOJI.right, `${PREFIX}whitelist @kullanıcı kaldır`)}\n` +
+        `${line(EMOJI.right, `${PREFIX}whitelist liste`)}`
+    }));
+  }
 
-  return message.reply(`🗑️ ${member.tag} whitelist'ten çıkarıldı.`);
+  if (sub === "ekle") {
+    whitelist.add(member.id);
+    saveWhitelist();
+
+    return replyE(message, createEmbed(guild, {
+      title: `${EMOJI.success} ・ ᴡʜɪᴛᴇʟɪꜱᴛ`,
+      description: `${EMOJI.success} ・ ${member} guard'dan muaf tutuldu (whitelist'e eklendi).`
+    }));
+  }
+
+  if (sub === "kaldır" || sub === "kaldir") {
+    whitelist.delete(member.id);
+    saveWhitelist();
+
+    return replyE(message, createEmbed(guild, {
+      title: `${EMOJI.trash} ・ ᴡʜɪᴛᴇʟɪꜱᴛ`,
+      description: `${EMOJI.warn} ・ ${member} whitelist'ten çıkarıldı.`
+    }));
+  }
+
+  return replyE(message, createEmbed(guild, {
+    title: `${EMOJI.info} ・ ᴋᴜʟʟᴀɴɪᴍ`,
+    description:
+      `${line(EMOJI.right, `${PREFIX}whitelist @kullanıcı ekle`)}\n` +
+      `${line(EMOJI.right, `${PREFIX}whitelist @kullanıcı kaldır`)}\n` +
+      `${line(EMOJI.right, `${PREFIX}whitelist liste`)}`
+  }));
 }
 
     // ===================== PING =====================
@@ -1502,6 +1773,15 @@ if (cmd === "nuke") {
             `${line(EMOJI.right, `${PREFIX}id 12`)}\n` +
             `${line(EMOJI.right, `${PREFIX}tag kaisen`)}\n\n` +
 
+            `**${line(EMOJI.star, "ᴇᴛᴋɪɴʟɪᴋ / ɪɴɢᴀᴍᴇ")}**\n` +
+            `${line(EMOJI.right, `${PREFIX}etkinlik <isim> <max kişi>`)}\n` +
+            `${line(EMOJI.right, `${PREFIX}ingame <süre> <max kişi> <isim>`)}\n\n` +
+
+            `**${line(EMOJI.shield, "ɢᴜᴀʀᴅ / ᴡʜɪᴛᴇʟɪꜱᴛ")}**\n` +
+            `${line(EMOJI.right, `${PREFIX}guardpanel`)}\n` +
+            `${line(EMOJI.right, `${PREFIX}whitelist @kullanıcı ekle/kaldır`)}\n` +
+            `${line(EMOJI.right, `${PREFIX}whitelist liste`)}\n\n` +
+
             `**${line(EMOJI.shield, "ᴍᴏᴅ")}**\n` +
             `${line(EMOJI.right, `${PREFIX}sil 10`)}\n` +
             `${line(EMOJI.right, `${PREFIX}kick @kisi sebep`)}\n` +
@@ -1613,20 +1893,24 @@ if (cmd === "nuke") {
       config.ticketStaffRoleId = ticketStaffRoleId;
       saveJSON(CONFIG_FILE, config);
 
-      // Panel (görseldeki "Ekip Başvuru" formatı)
+      // Panel (screenshota benzer)
       const panelEmbed = createEmbed(guild, {
-        title: `${EMOJI.info} Ekip Başvuru`,
+        title: "",
+        fields: [
+          { name: `${EMOJI.success} ・ ʙᴀꜱᴠᴜʀᴜ ꜱɪꜱᴛᴇᴍɪ`, value: `${EMOJI.success} ・ ✅`, inline: true },
+          { name: `${EMOJI.info} ・ ʙᴀꜱᴠᴜʀᴜ ʙɪʟɢɪ`, value: `${EMOJI.lock} ・ ᴇʀɪꜱɪᴍ`, inline: true },
+          { name: "\u200b", value: "\u200b", inline: true }
+        ],
         description:
-          `**${SERVER_NAME}** sunucusunda bir başvuru oluşturmak veya destek almak için aşağıdaki butona tıklayın.\n\n` +
-          `Butona tıkladıktan sonra sizin için özel bir başvuru kanalı açılacak. Sadece yetkililer ve siz ticketi görüntüleyebilirsiniz.`,
+          `${EMOJI.right} ・ Formu doldurduktan sonra bekleyiniz alım sorumlularımız en kısa sürede ilgilenecektir.`,
         image: PANEL_IMAGE
       });
 
       const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId("ticket_open")
-          .setStyle(ButtonStyle.Danger)
-          .setLabel("Başvuru Oluştur")
+          .setStyle(ButtonStyle.Primary)
+          .setLabel("Başvuru yap")
           .setEmoji("📝")
       );
 
@@ -1728,6 +2012,108 @@ if (cmd === "etkinlik") {
     closed: false
   });
 }
+
+    // ===================== INGAME (KATIL/AYRIL/İPTAL PANELİ) =====================
+    // Kullanım: .ingame <süre> <max kişi> <isim>
+    // Örnek:    .ingame 2sa 30 Otoban Sonrası Maddex 22:00
+    if (cmd === "ingame") {
+      if (!isStaff(userId)) {
+        return replyE(
+          message,
+          createEmbed(guild, {
+            title: line(EMOJI.lock, "ʏᴇᴛᴋɪ ʏᴏᴋ"),
+            description: line(EMOJI.warn, "Sadece yetkililer.")
+          })
+        );
+      }
+
+      // Max kişi sayısı: sadece sayıdan oluşan ilk argümanı bul (süre kısmı 1-2 kelime olabilir: "1g 2sa")
+      let limitIdx = args.findIndex((a) => /^\d+$/.test(a));
+
+      if (limitIdx === -1 || limitIdx === 0) {
+        return replyE(
+          message,
+          createEmbed(guild, {
+            title: line(EMOJI.info, "ᴋᴜʟʟᴀɴɪᴍ"),
+            description:
+              `${line(EMOJI.right, `${PREFIX}ingame <süre> <max kişi> <isim>`)}\n` +
+              `${line(EMOJI.right, `${PREFIX}ingame 2sa 30 Otoban Sonrası Maddex 22:00`)}\n\n` +
+              `${EMOJI.info} ・ Süre örnekleri: \`30dk\`, \`2sa\`, \`1g 2sa\`, \`90\` (dakika)`
+          })
+        );
+      }
+
+      const durationText = args.slice(0, limitIdx).join(" ");
+      const limit = parseInt(args[limitIdx], 10);
+      const titleText = args.slice(limitIdx + 1).join(" ").trim();
+
+      const durationMs = parseDurationToMs(durationText);
+
+      if (!durationMs || durationMs <= 0) {
+        return replyE(
+          message,
+          createEmbed(guild, {
+            title: line(EMOJI.warn, "ɢᴇᴄᴇʀꜱɪᴢ ꜱᴜ̈ʀᴇ"),
+            description: `${EMOJI.info} ・ Süre örnekleri: \`30dk\`, \`2sa\`, \`1g 2sa\`, \`90\` (dakika)`
+          })
+        );
+      }
+
+      if (isNaN(limit) || limit < 1) {
+        return replyE(
+          message,
+          createEmbed(guild, {
+            title: line(EMOJI.warn, "ɢᴇᴄᴇʀꜱɪᴢ ᴋᴏɴᴛᴇɴᴊᴀɴ"),
+            description: line(EMOJI.info, "Max kişi sayısını geçerli bir sayı olarak gir.")
+          })
+        );
+      }
+
+      if (!titleText) {
+        return replyE(
+          message,
+          createEmbed(guild, {
+            title: line(EMOJI.warn, "ʜᴀᴛᴀ"),
+            description: line(EMOJI.info, "Etkinlik ismini gir.")
+          })
+        );
+      }
+
+      const endsAt = Date.now() + durationMs;
+
+      const data = {
+        title: titleText,
+        limit,
+        users: [],
+        durationMs,
+        endsAt,
+        closed: false,
+        timer: null,
+        channelId: message.channel.id
+      };
+
+      const msg = await message.channel.send({
+        embeds: [ingameEmbed(guild, data)],
+        components: [ingameRows(false)]
+      });
+
+      ingameList.set(msg.id, data);
+
+      data.timer = setTimeout(() => {
+        closeIngame(guild, msg.id, "Süre doldu").catch(() => {});
+      }, durationMs);
+
+      return replyE(
+        message,
+        createEmbed(guild, {
+          title: line(EMOJI.success, "ᴘᴀɴᴇʟ ᴋᴜʀᴜʟᴅᴜ"),
+          description:
+            `${line(EMOJI.star, `**${titleText}**`)}\n` +
+            `${line(EMOJI.right, `Kontenjan: **${limit}**`)}\n` +
+            `${line(EMOJI.right, `Süre: **${formatRemaining(durationMs)}**`)}`
+        })
+      );
+    }
 
     
     // ===================== OTYETKI =====================
