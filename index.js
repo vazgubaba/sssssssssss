@@ -9,9 +9,28 @@
 process.on("unhandledRejection", (r) => console.error("UNHANDLED_REJECTION:", r));
 process.on("uncaughtException", (e) => console.error("UNCAUGHT_EXCEPTION:", e));
 
+// ===================== MONGO ÖN-SENKRON (BOT AÇILMADAN ÖNCE) =====================
+// CommonJS'te top-level await olmadığı için, Mongo'daki kayıtları yerel data/
+// klasörüne senkron şekilde indirmek için ayrı bir process çalıştırıyoruz.
+// Bu sayede aşağıdaki loadJSON(...) çağrıları (top-level, senkron) en güncel
+// veriyi bulur. MONGODB_URI tanımlı değilse bu adım sessizce atlanır.
+const { execSync } = require("child_process");
+try {
+  if ((process.env.MONGODB_URI || "").trim()) {
+    execSync(`node "${__dirname}/mongo-sync-pull.js"`, {
+      stdio: "inherit",
+      env: process.env,
+      timeout: 15000
+    });
+  }
+} catch (e) {
+  console.error("⚠️ Mongo ön-senkron başarısız (yerel veriyle devam ediliyor):", e.message);
+}
+
 const fs = require("fs");
 const path = require("path");
 const express = require("express");
+const { MongoClient } = require("mongodb");
 
 const {
   Client,
@@ -23,7 +42,10 @@ const {
   ButtonStyle,
   PermissionsBitField,
   ChannelType,
-  ActivityType
+  ActivityType,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle
 } = require("discord.js");
 
 const { joinVoiceChannel, getVoiceConnection } = require("@discordjs/voice");
@@ -139,6 +161,64 @@ if (STAFF_IDS.size === 0) {
 
 const isStaff = (id) => isOwner(id) || STAFF_IDS.has(id);
 
+// ===================== KALICI VERİTABANI (MongoDB) =====================
+// Render gibi platformlarda yerel disk her redeploy'da silinir.
+// MONGODB_URI tanımlıysa tüm veriler MongoDB'de de saklanır (kalıcı).
+// Tanımlı değilse bot sadece yerel JSON dosyalarıyla çalışır (redeploy'da o veriler kaybolabilir).
+const MONGODB_URI = (process.env.MONGODB_URI || "").trim();
+const MONGODB_DB = (process.env.MONGODB_DB || "discord_bot").trim();
+
+let mongoClient = null;
+let mongoCol = null; // koleksiyon: { _id: "<dosya adı>", value: <veri> }
+let mongoReady = false;
+
+async function initMongo() {
+  if (!MONGODB_URI) {
+    console.log("ℹ️ MONGODB_URI tanımlı değil, sadece yerel JSON kullanılacak (redeploy'da kaybolabilir).");
+    return;
+  }
+  try {
+    mongoClient = new MongoClient(MONGODB_URI, {
+      serverSelectionTimeoutMS: 5000,
+      connectTimeoutMS: 5000
+    });
+    await mongoClient.connect();
+    mongoCol = mongoClient.db(MONGODB_DB).collection("kv_store");
+    mongoReady = true;
+    console.log("✅ MongoDB bağlantısı OK — veriler kalıcı olacak.");
+  } catch (e) {
+    console.error("❌ MongoDB bağlantı hatası, yerel JSON'a devam ediliyor:", e.message);
+    mongoReady = false;
+  }
+}
+
+// Mongo'dan bir kaydı indirip yerel dosyaya yazar (bot açılışında "senkronize et")
+async function pullFromMongo(key, localFile) {
+  if (!mongoReady) return;
+  try {
+    const doc = await mongoCol.findOne({ _id: key });
+    if (doc && doc.value !== undefined) {
+      fs.writeFileSync(localFile, JSON.stringify(doc.value, null, 2));
+    }
+  } catch (e) {
+    console.error(`Mongo pull hata (${key}):`, e.message);
+  }
+}
+
+// Bir veriyi hem Mongo'ya hem yerel dosyaya yazar (write-through)
+async function pushToMongo(key, value) {
+  if (!mongoReady) return;
+  try {
+    await mongoCol.updateOne(
+      { _id: key },
+      { $set: { value, updatedAt: new Date() } },
+      { upsert: true }
+    );
+  } catch (e) {
+    console.error(`Mongo push hata (${key}):`, e.message);
+  }
+}
+
 // ===================== DATA / CONFIG =====================
 const DATA_DIR = path.join(__dirname, "data");
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -161,8 +241,9 @@ function saveStaffFile() {
   } catch (e) {
     console.error("staff.json yazılamadı:", e);
   }
+  pushToMongo("staff.json", Array.from(STAFF_IDS)).catch(() => {});
 }
-loadStaffFile();
+loadStaffFile(); // mongo-sync-pull.js zaten diske indirdi, burada okuyup STAFF_IDS'e ekliyoruz
 
 const CONFIG_FILE = path.join(DATA_DIR, "config.json");
 const INV_FILE = path.join(DATA_DIR, "envanter.json");
@@ -180,21 +261,33 @@ function loadJSON(file, fallback) {
     return fallback;
   }
 }
-function saveJSON(file, data) {
+// saveJSON artık hem yerel dosyaya hem (varsa) Mongo'ya yazar.
+// key verilmezse dosya adının kendisi (path.basename) Mongo key'i olarak kullanılır.
+function saveJSON(file, data, mongoKey) {
   try {
     fs.writeFileSync(file, JSON.stringify(data, null, 2));
   } catch {}
+  const key = mongoKey || path.basename(file);
+  pushToMongo(key, data).catch(() => {});
 }
 
 const config = loadJSON(CONFIG_FILE, {
   logChannelId: null,
   ticketCategoryId: null,
-  ticketStaffRoleId: null
+  ticketStaffRoleId: null,
+  ekipRoleId: null,        // Başvuru kabul edilince verilecek "ekip" rolü
+  newRoleId: null,         // Başvuru kabul edilince verilecek "new" rolü
+  aktiflikLogChannelId: null, // Aktiflik testi bitince katılmayanların düşeceği kanal
+  banAffLogChannelId: null    // "Banlıyım!" panelinin bulunduğu / kayıtların gittiği kanal
 });
 
 let logChannelId = config.logChannelId;
 let ticketCategoryId = config.ticketCategoryId;
 let ticketStaffRoleId = config.ticketStaffRoleId;
+let ekipRoleId = config.ekipRoleId;
+let newRoleId = config.newRoleId;
+let aktiflikLogChannelId = config.aktiflikLogChannelId;
+let banAffLogChannelId = config.banAffLogChannelId;
 
 let envanter = loadJSON(INV_FILE, {});
 let otYetkililer = loadJSON(AUTH_FILE, []);
@@ -362,6 +455,204 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
   }
 }
 
+// ===================== AKTİFLİK TESTİ HELPERS =====================
+function aktiflikRows(closed) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("aktiflik_join")
+      .setLabel("Aktifliğe Katıl")
+      .setStyle(ButtonStyle.Success)
+      .setEmoji("✅")
+      .setDisabled(!!closed),
+    new ButtonBuilder()
+      .setCustomId("aktiflik_cancel")
+      .setLabel("İptal Et")
+      .setStyle(ButtonStyle.Danger)
+      .setEmoji("🔴")
+      .setDisabled(!!closed)
+  );
+}
+
+function aktiflikEmbed(guild, data) {
+  const remaining = data.endsAt - Date.now();
+  return createEmbed(guild, {
+    title: `${EMOJI.star} ・ ᴀᴋᴛɪꜰʟɪᴋ ᴛᴇꜱᴛɪ ʙᴀşʟᴀᴅɪ`,
+    description:
+      `<@&${data.roleId}> ・ rolüne sahip kişilerin aktiflik testine katılımı **ZORUNLUDUR**.\n` +
+      `${EMOJI.right} ・ Lütfen aşağıdaki butona tıklayarak katılım sağlayınız.\n` +
+      `${EMOJI.warn} ・ Katılım sağlamayan kişiler süre sonunda tespit edilerek işlem yapılacaktır.\n\n` +
+      `${EMOJI.info} ・ **Bitiş Zamanı:** ${data.closed ? "Sona erdi" : formatRemaining(remaining > 0 ? remaining : 0)}\n` +
+      `${EMOJI.right} ・ **Katılımcı Sayısı:** ${data.joined.size} kişi`,
+    image: TICKET_BANNER_URL
+  });
+}
+
+async function refreshAktiflikMessage(guild, msgId) {
+  const data = aktiflikList.get(msgId);
+  if (!data) return;
+  const channel = guild.channels.cache.get(data.channelId);
+  if (!channel) return;
+  const msg = await channel.messages.fetch(msgId).catch(() => null);
+  if (!msg) return;
+  await msg.edit({
+    embeds: [aktiflikEmbed(guild, data)],
+    components: [aktiflikRows(data.closed)]
+  }).catch(() => {});
+}
+
+// Aktiflik testi bitince: katılmayanları log kanalına TEKER TEKER gönderir
+async function closeAktiflik(guild, msgId, reason) {
+  const data = aktiflikList.get(msgId);
+  if (!data || data.closed) return;
+
+  data.closed = true;
+  if (data.timer) {
+    clearTimeout(data.timer);
+    data.timer = null;
+  }
+
+  await refreshAktiflikMessage(guild, msgId);
+
+  const role = guild.roles.cache.get(data.roleId);
+  const logChId = aktiflikLogChannelId;
+  const logCh = logChId ? guild.channels.cache.get(logChId) : null;
+
+  // Bitiş duyurusu
+  const announceCh = guild.channels.cache.get(data.channelId);
+
+  if (!role) {
+    if (announceCh) {
+      await announceCh.send({
+        embeds: [createEmbed(guild, {
+          title: `${EMOJI.warn} ・ ʜᴀᴛᴀ`,
+          description: `${EMOJI.warn} ・ Rol bulunamadı, aktiflik testi sonuçlandırılamadı.`
+        })]
+      }).catch(() => {});
+    }
+    return;
+  }
+
+  // Role sahip, sunucuda olan, bot olmayan üyeleri çek
+  let members;
+  try {
+    members = await guild.members.fetch();
+  } catch {
+    members = guild.members.cache;
+  }
+
+  const roleMembers = members.filter((m) => !m.user.bot && m.roles.cache.has(data.roleId));
+  const notJoined = roleMembers.filter((m) => !data.joined.has(m.id));
+
+  if (announceCh) {
+    await announceCh.send({
+      embeds: [createEmbed(guild, {
+        title: `${EMOJI.lock} ・ ᴀᴋᴛɪꜰʟɪᴋ ᴛᴇꜱᴛɪ ꜱᴏɴᴜ`,
+        description:
+          `${EMOJI.right} ・ <@&${data.roleId}> rolüne ait aktiflik testi sona erdi.\n` +
+          `${EMOJI.warn} ・ **${notJoined.size}** kişi katılmadı.\n` +
+          `${EMOJI.info} ・ Sebep: **${reason}**`
+      })]
+    }).catch(() => {});
+  }
+
+  if (!logCh) return; // log kanalı ayarlı değilse listeleme yapılamaz
+
+  for (const [, member] of notJoined) {
+    const stats = activityStats.get(member.id);
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`aktiflik_kick_${member.id}_${data.roleId}`)
+        .setLabel("Ekipten At")
+        .setStyle(ButtonStyle.Danger)
+        .setEmoji("🚫"),
+      new ButtonBuilder()
+        .setCustomId(`aktiflik_stats_${member.id}`)
+        .setLabel("İstatistikler")
+        .setStyle(ButtonStyle.Primary)
+        .setEmoji("📊")
+    );
+
+    await logCh.send({
+      embeds: [createEmbed(guild, {
+        title: `${EMOJI.warn} ・ [AKTİFLİK SONUCU] <@&${data.roleId}> rolüne ait aktiflik testi sona erdi.`,
+        description:
+          `${EMOJI.right} ・ ${member} adlı kullanıcı \`(${member.id})\` ${new Date().toLocaleString("tr-TR")} tarihindeki ` +
+          `aktiflik testine **katılmadı**.\n${EMOJI.info} ・ Aşağıdaki butonları kullanarak ilgili üye hakkında işlem yapabilirsiniz.`
+      })],
+      components: [row]
+    }).catch(() => {});
+  }
+}
+
+function statsEmbed(guild, member) {
+  const stats = activityStats.get(member.id) || { lastMessageAt: null, lastVoiceJoinAt: null, ingameCount: 0 };
+  return createEmbed(guild, {
+    title: `${EMOJI.search} ・ ᴋᴜʟʟᴀɴɪᴄɪ ᴀᴋᴛɪꜰʟɪᴋ ɪꜱᴛᴀᴛɪꜱᴛɪɢɪ`,
+    description:
+      `${member} ・ adlı üyenin aktiflik analizi:\n\n` +
+      `${EMOJI.right} ・ **Son Mesaj:** ${formatAgo(stats.lastMessageAt)}\n` +
+      `${EMOJI.headphones} ・ **Son Sese Katılım:** ${formatAgo(stats.lastVoiceJoinAt)}\n` +
+      `${EMOJI.star} ・ **Toplam İngame Katılımı:** ${stats.ingameCount} Defa`
+  });
+}
+
+// ===================== BAN AFFI (BANLIYIM!) HELPERS =====================
+const BANAFF_PAGE_SIZE = 4;
+
+function banListEmbed(guild, page) {
+  const total = banAffRecords.length;
+  const totalPages = Math.max(1, Math.ceil(total / BANAFF_PAGE_SIZE));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+
+  const start = (safePage - 1) * BANAFF_PAGE_SIZE;
+  const pageRecords = banAffRecords.slice(start, start + BANAFF_PAGE_SIZE);
+
+  let desc;
+  if (total === 0) {
+    desc = `${EMOJI.info} ・ Henüz kayıtlı banlı yok.`;
+  } else {
+    desc = pageRecords
+      .map((r, idx) => {
+        const num = start + idx + 1;
+        const dateStr = new Date(r.createdAt).toLocaleDateString("tr-TR");
+        return (
+          `**${num}. Banlı:** <@${r.userId}>\n` +
+          `**Tarih:** ${dateStr}\n` +
+          `**Sebep:**\n\`\`\`${r.reason}\`\`\``
+        );
+      })
+      .join("\n\n");
+  }
+
+  return createEmbed(guild, {
+    title: `${EMOJI.ban} ・ ᴅᴇᴛᴀʏʟɪ ʙᴀɴ ʟɪꜱᴛ`,
+    description: desc,
+    fields: [{ name: "Toplam Kayıt", value: `\`${total}\``, inline: false }]
+  });
+}
+
+function banListRows(page) {
+  const total = banAffRecords.length;
+  const totalPages = Math.max(1, Math.ceil(total / BANAFF_PAGE_SIZE));
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`banlist_prev_${page}`)
+      .setLabel("◄")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(page <= 1),
+    new ButtonBuilder()
+      .setCustomId(`banlist_page_${page}`)
+      .setLabel(`${page} / ${totalPages}`)
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(true),
+    new ButtonBuilder()
+      .setCustomId(`banlist_next_${page}`)
+      .setLabel("►")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(page >= totalPages)
+  );
+}
+
 
 
   
@@ -470,12 +761,52 @@ const client = new Client({
 });
 
 // ===================== STATE =====================
-const aktiflikList = new Map(); // messageId => Set(userId)
+// messageId -> { roleId, durationMs, endsAt, joined:Set<userId>, timer, closed, channelId, guildId }
+const aktiflikList = new Map();
 let maintenanceMode = false;
 const ticketOwners = new Map();      // channelId -> openerId
 const etkinlikList = new Map(); 
 const ingameList = new Map();        // messageId -> {title, limit, users:[], durationMs, endsAt, timer, closed, channelId}
 const voiceBlockedUsers = new Set(); // ses yasak list
+
+// ===================== BAN AFFI (BANLIYIM!) =====================
+const BANAFF_FILE = path.join(DATA_DIR, "banaff.json");
+// kayıt: { id, userId, userTag, reason, createdAt }
+let banAffRecords = loadJSON(BANAFF_FILE, []);
+function saveBanAff() {
+  saveJSON(BANAFF_FILE, banAffRecords);
+}
+
+// ===================== AKTİVİTE TAKİP (aktiflik testi istatistikleri için) =====================
+// userId -> { lastMessageAt: ms|null, lastVoiceJoinAt: ms|null, ingameCount: number }
+const activityStats = new Map();
+function ensureActivity(id) {
+  if (!activityStats.has(id)) {
+    activityStats.set(id, { lastMessageAt: null, lastVoiceJoinAt: null, ingameCount: 0 });
+  }
+  return activityStats.get(id);
+}
+function touchLastMessage(id) {
+  ensureActivity(id).lastMessageAt = Date.now();
+}
+function touchLastVoiceJoin(id) {
+  ensureActivity(id).lastVoiceJoinAt = Date.now();
+}
+function touchIngameJoin(id) {
+  ensureActivity(id).ingameCount += 1;
+}
+function formatAgo(ms) {
+  if (!ms) return "Hiç";
+  const diff = Date.now() - ms;
+  if (diff < 0) return "Az önce";
+  const min = Math.floor(diff / 60000);
+  if (min < 1) return "Az önce";
+  if (min < 60) return `${min} dakika önce`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `${h} saat önce`;
+  const d = Math.floor(h / 24);
+  return `${d} gün önce`;
+}
 // ===================== GUARD SYSTEM (SIFIRDAN) =====================
 
 // Guard ayar dosyası
@@ -941,6 +1272,12 @@ client.on("voiceStateUpdate", async (oldState, newState) => {
     const member = newState.member;
     if (!member || member.user.bot) return;
     if (!newState.channelId) return;
+
+    // Aktiflik istatistiği: kanala yeni katıldıysa (önce yoktu, şimdi var) işaretle
+    if (!oldState.channelId && newState.channelId) {
+      touchLastVoiceJoin(member.id);
+    }
+
     if (voiceBlockedUsers.has(member.id)) {
       await member.voice.disconnect().catch(() => {});
     }
@@ -950,10 +1287,42 @@ client.on("voiceStateUpdate", async (oldState, newState) => {
 // ===================== TICKET BUTTONS =====================
 client.on("interactionCreate", async (i) => {
   try {
-    if (!i.isButton()) return;
     if (!i.guild) return;
-
     const guild = i.guild;
+
+    // ===================== MODAL SUBMIT: BAN AFFI FORMU =====================
+    if (i.isModalSubmit() && i.customId === "banaff_modal") {
+      await i.deferReply({ flags: 64 });
+
+      const reason = i.fields.getTextInputValue("banaff_reason");
+
+      const record = {
+        id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+        userId: i.user.id,
+        userTag: i.user.tag,
+        reason: reason.slice(0, 950),
+        createdAt: Date.now()
+      };
+
+      banAffRecords.unshift(record);
+      saveBanAff();
+
+      const logCh = banAffLogChannelId ? guild.channels.cache.get(banAffLogChannelId) : null;
+      if (logCh) {
+        await logCh.send({
+          embeds: [createEmbed(guild, {
+            title: line(EMOJI.ban, "ʏᴇɴɪ ʙᴀɴ ᴀꜰꜰɪ ᴋᴀʏᴅɪ"),
+            description:
+              `${EMOJI.right} ・ Banlı: <@${i.user.id}> \`(${i.user.id})\`\n` +
+              `${EMOJI.info} ・ Sebep:\n\`\`\`${record.reason}\`\`\``
+          })]
+        }).catch(() => {});
+      }
+
+      return i.editReply("✅ Ban kaydın alındı, ekibimiz inceleyecek.");
+    }
+
+    if (!i.isButton()) return;
 
     // ===================== TICKET OPEN =====================
 if (i.customId === "ticket_open") {
@@ -993,10 +1362,20 @@ if (i.customId === "ticket_open") {
 
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId("ticket_close")
-      .setLabel("ᴋᴀᴘᴀᴛ")
+      .setCustomId(`basvuru_kabul_${i.user.id}`)
+      .setLabel("Kabul Et")
+      .setStyle(ButtonStyle.Success)
+      .setEmoji(EMOJI.success),
+    new ButtonBuilder()
+      .setCustomId(`basvuru_reddet_${i.user.id}`)
+      .setLabel("Reddet")
       .setStyle(ButtonStyle.Danger)
-      .setEmoji("🔒")
+      .setEmoji(EMOJI.warn),
+    new ButtonBuilder()
+      .setCustomId("ticket_close")
+      .setLabel("Kapat & Sil")
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji(EMOJI.lock)
   );
 
   // --- FORM METNİ BURADA BAŞLIYOR ---
@@ -1013,12 +1392,12 @@ if (i.customId === "ticket_open") {
     content: `<@${i.user.id}> | <@&${ticketStaffRoleId}>`,
     embeds: [
       {
-        title: "Quantès Başvuru",
-        description: `Aşağıdaki butona tıklayarak başvuru oluşturabilirsiniz.\n\n${basvuruFormu}`,
+        title: `Hoş Geldin, ${i.user.username}`,
+        description: `**Başvuru Formu**\n\n*Alttaki formu doldurup yetkili arkadaşların cevap vermesini beklemeden lütfen formu iletiniz.*\n\n${basvuruFormu}`,
         color: 0x2f3136, // Koyu gri/siyah tonu (şık durur)
         thumbnail: { url: THUMB_URL },
         image: { url: TICKET_BANNER_URL },
-        footer: { text: "Quantès" }
+        footer: { text: FOOTER_TEXT }
       }
     ],
     components: [row]
@@ -1028,6 +1407,98 @@ if (i.customId === "ticket_open") {
   return i.editReply(`✅ Ticket açıldı: ${ch}`);
 }
 
+    // ===================== BAŞVURU: KABUL ET =====================
+    if (i.customId.startsWith("basvuru_kabul_")) {
+      const isAdmin = i.member.permissions.has(PermissionsBitField.Flags.Administrator);
+      if (!isStaff(i.user.id) && !isAdmin) {
+        return i.reply({ content: "❌ Bu işlemi yapma yetkin yok.", flags: 64 });
+      }
+
+      await i.deferReply({ flags: 64 });
+
+      const applicantId = i.customId.replace("basvuru_kabul_", "");
+      const member = await guild.members.fetch(applicantId).catch(() => null);
+
+      if (!member) {
+        return i.editReply("❌ Başvuru sahibi sunucuda bulunamadı.");
+      }
+
+      const rolesToAdd = [];
+      if (ekipRoleId && guild.roles.cache.has(ekipRoleId)) rolesToAdd.push(ekipRoleId);
+      if (newRoleId && guild.roles.cache.has(newRoleId)) rolesToAdd.push(newRoleId);
+
+      if (rolesToAdd.length) {
+        await member.roles.add(rolesToAdd).catch(() => {});
+      }
+
+      // Butonları kilitle
+      const disabledRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("basvuru_kabul_done").setLabel("Kabul Edildi").setStyle(ButtonStyle.Success).setEmoji(EMOJI.success).setDisabled(true),
+        new ButtonBuilder().setCustomId("basvuru_reddet_done").setLabel("Reddet").setStyle(ButtonStyle.Danger).setEmoji(EMOJI.warn).setDisabled(true),
+        new ButtonBuilder().setCustomId("ticket_close").setLabel("Kapat & Sil").setStyle(ButtonStyle.Secondary).setEmoji(EMOJI.lock)
+      );
+      await i.message.edit({ components: [disabledRow] }).catch(() => {});
+
+      await i.channel.send({
+        embeds: [createEmbed(guild, {
+          title: line(EMOJI.success, "ʙᴀşᴠᴜʀᴜ ᴋᴀʙᴜʟ ᴇᴅɪʟᴅɪ"),
+          description: `${EMOJI.success} ・ ${member} adlı kullanıcının başvurusu **kabul edildi** (<@${i.user.id}> tarafından).`
+        })]
+      }).catch(() => {});
+
+      await member.send({
+        embeds: [createEmbed(guild, {
+          title: line(EMOJI.success, "ʙᴀşᴠᴜʀᴜɴ ᴋᴀʙᴜʟ ᴇᴅɪʟᴅɪ"),
+          description:
+            `${EMOJI.success} ・ Tebrikler! **${guild.name}** sunucusundaki başvurun kabul edildi.\n` +
+            `${EMOJI.right} ・ Ekibimize katıldığın için teşekkürler, aramızda görüşmek üzere!`
+        })]
+      }).catch(() => {});
+
+      return i.editReply("✅ Başvuru kabul edildi, rol verildi ve kullanıcıya DM gönderildi.");
+    }
+
+    // ===================== BAŞVURU: REDDET =====================
+    if (i.customId.startsWith("basvuru_reddet_")) {
+      const isAdmin = i.member.permissions.has(PermissionsBitField.Flags.Administrator);
+      if (!isStaff(i.user.id) && !isAdmin) {
+        return i.reply({ content: "❌ Bu işlemi yapma yetkin yok.", flags: 64 });
+      }
+
+      await i.deferReply({ flags: 64 });
+
+      const applicantId = i.customId.replace("basvuru_reddet_", "");
+      const member = await guild.members.fetch(applicantId).catch(() => null);
+
+      // Butonları kilitle
+      const disabledRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("basvuru_kabul_done").setLabel("Kabul Et").setStyle(ButtonStyle.Success).setEmoji(EMOJI.success).setDisabled(true),
+        new ButtonBuilder().setCustomId("basvuru_reddet_done").setLabel("Reddedildi").setStyle(ButtonStyle.Danger).setEmoji(EMOJI.warn).setDisabled(true),
+        new ButtonBuilder().setCustomId("ticket_close").setLabel("Kapat & Sil").setStyle(ButtonStyle.Secondary).setEmoji(EMOJI.lock)
+      );
+      await i.message.edit({ components: [disabledRow] }).catch(() => {});
+
+      await i.channel.send({
+        embeds: [createEmbed(guild, {
+          title: line(EMOJI.warn, "ʙᴀşᴠᴜʀᴜ ʀᴇᴅᴅᴇᴅɪʟᴅɪ"),
+          description: `${EMOJI.warn} ・ Başvuru **reddedildi** (<@${i.user.id}> tarafından).`
+        })]
+      }).catch(() => {});
+
+      if (member) {
+        await member.send({
+          embeds: [createEmbed(guild, {
+            title: line(EMOJI.warn, "ʙᴀşᴠᴜʀᴜɴ ʀᴇᴅᴅᴇᴅɪʟᴅɪ"),
+            description:
+              `${EMOJI.warn} ・ **${guild.name}** sunucusundaki başvurun reddedildi.\n` +
+              `${EMOJI.right} ・ İlerleyen zamanlarda tekrar başvurabilirsin.`
+          })]
+        }).catch(() => {});
+      }
+
+      return i.editReply("🔴 Başvuru reddedildi ve kullanıcıya DM gönderildi.");
+    }
+
     // ===================== TICKET CLOSE =====================
     if (i.customId === "ticket_close") {
       await i.deferReply({ flags: 64 });
@@ -1035,7 +1506,7 @@ if (i.customId === "ticket_open") {
       const opener = ticketOwners.get(i.channel.id);
       const admin = i.member.permissions.has(PermissionsBitField.Flags.Administrator);
 
-      if (i.user.id !== opener && !admin)
+      if (i.user.id !== opener && !admin && !isStaff(i.user.id))
         return i.editReply("Yetkin yok.");
 
       await i.channel.delete().catch(() => {});
@@ -1043,21 +1514,110 @@ if (i.customId === "ticket_open") {
       return;
     }
 
-    // ===================== AKTIFLIK =====================
-    if (i.customId.startsWith("aktiflik_join_")) {
-      const msgId = i.customId.replace("aktiflik_join_", "");
+    // ===================== BAN AFFI: "BANLIYIM!" BUTONU (MODAL AÇ) =====================
+    if (i.customId === "banaff_open") {
+      const modal = new ModalBuilder()
+        .setCustomId("banaff_modal")
+        .setTitle("Ban Affı Formu");
 
-      if (!aktiflikList.has(msgId))
-        aktiflikList.set(msgId, new Set());
+      const reasonInput = new TextInputBuilder()
+        .setCustomId("banaff_reason")
+        .setLabel("Ban sebebini detaylı açıkla")
+        .setStyle(TextInputStyle.Paragraph)
+        .setPlaceholder("Kim banladı, ne zaman, neden, hangi sunucu/sistem vb.")
+        .setMinLength(5)
+        .setMaxLength(950)
+        .setRequired(true);
 
-      const users = aktiflikList.get(msgId);
-      if (users.has(i.user.id))
-        return i.reply({ content: "❌ Zaten katıldın.", flags: 64 });
+      modal.addComponents(new ActionRowBuilder().addComponents(reasonInput));
 
-      users.add(i.user.id);
+      return i.showModal(modal);
+    }
 
-      await i.message.edit({ embeds: [/* embed */] });
-      return i.reply({ content: "✅ Katıldın!", flags: 64 });
+    // ===================== BAN LIST: SAYFALAMA =====================
+    if (i.customId.startsWith("banlist_prev_") || i.customId.startsWith("banlist_next_")) {
+      if (!isStaff(i.user.id)) {
+        return i.reply({ content: "❌ Bu işlemi yapma yetkin yok.", flags: 64 });
+      }
+
+      const isPrev = i.customId.startsWith("banlist_prev_");
+      const currentPage = parseInt(i.customId.replace(isPrev ? "banlist_prev_" : "banlist_next_", ""), 10) || 1;
+      const newPage = isPrev ? currentPage - 1 : currentPage + 1;
+
+      await i.update({
+        embeds: [banListEmbed(guild, newPage)],
+        components: [banListRows(newPage)]
+      }).catch(() => {});
+      return;
+    }
+
+    // ===================== AKTİFLİK: KATIL =====================
+    if (i.customId === "aktiflik_join") {
+      const msgId = i.message.id;
+      const data = aktiflikList.get(msgId);
+
+      if (!data) return i.reply({ content: "❌ Bu test artık aktif değil.", flags: 64 });
+      if (data.closed) return i.reply({ content: "🔒 Bu test sona erdi.", flags: 64 });
+      if (data.joined.has(i.user.id)) return i.reply({ content: "⚠️ Zaten katıldın.", flags: 64 });
+
+      data.joined.add(i.user.id);
+      await refreshAktiflikMessage(guild, msgId);
+
+      return i.reply({ content: "✅ Aktiflik testine katılımın kaydedildi!", flags: 64 });
+    }
+
+    // ===================== AKTİFLİK: İPTAL ET =====================
+    if (i.customId === "aktiflik_cancel") {
+      const isAdmin = i.member.permissions.has(PermissionsBitField.Flags.Administrator);
+      if (!isStaff(i.user.id) && !isAdmin) {
+        return i.reply({ content: "❌ Bu işlemi yapma yetkin yok.", flags: 64 });
+      }
+
+      await i.deferReply({ flags: 64 });
+
+      const msgId = i.message.id;
+      const data = aktiflikList.get(msgId);
+      if (!data) return i.editReply("❌ Bu test artık aktif değil.");
+      if (data.closed) return i.editReply("⚠️ Bu test zaten kapalı.");
+
+      data.closed = true;
+      if (data.timer) {
+        clearTimeout(data.timer);
+        data.timer = null;
+      }
+      await refreshAktiflikMessage(guild, msgId);
+
+      return i.editReply("🔴 Aktiflik testi iptal edildi. (Katılmayanlar listelenmedi.)");
+    }
+
+    // ===================== AKTİFLİK: EKİPTEN AT =====================
+    if (i.customId.startsWith("aktiflik_kick_")) {
+      const isAdmin = i.member.permissions.has(PermissionsBitField.Flags.Administrator);
+      if (!isStaff(i.user.id) && !isAdmin) {
+        return i.reply({ content: "❌ Bu işlemi yapma yetkin yok.", flags: 64 });
+      }
+
+      await i.deferReply({ flags: 64 });
+
+      const parts = i.customId.replace("aktiflik_kick_", "").split("_");
+      const targetId = parts[0];
+      const roleId = parts[1];
+
+      const member = await guild.members.fetch(targetId).catch(() => null);
+      if (!member) return i.editReply("❌ Üye sunucuda bulunamadı (zaten ayrılmış olabilir).");
+
+      await member.roles.remove(roleId).catch(() => {});
+
+      return i.editReply(`🚫 ${member} adlı üyenin rolü alındı (ekipten çıkarıldı).`);
+    }
+
+    // ===================== AKTİFLİK: İSTATİSTİKLER =====================
+    if (i.customId.startsWith("aktiflik_stats_")) {
+      const targetId = i.customId.replace("aktiflik_stats_", "");
+      const member = await guild.members.fetch(targetId).catch(() => null);
+      if (!member) return i.reply({ content: "❌ Üye bulunamadı.", flags: 64 });
+
+      return i.reply({ embeds: [statsEmbed(guild, member)], flags: 64 });
     }
 
     // ===================== ETKINLIK =====================
@@ -1087,6 +1647,7 @@ if (i.customId === "ticket_open") {
   }
 
   data.users.push(i.user.id);
+  touchIngameJoin(i.user.id);
 
   const channel = i.channel;
   const msg = await channel.messages.fetch(msgId);
@@ -1158,6 +1719,7 @@ if (i.customId === "ticket_open") {
       }
 
       data.users.push(i.user.id);
+      touchIngameJoin(i.user.id);
 
       if (data.users.length >= data.limit) {
         await closeIngame(guild, msgId, "Kontenjan doldu");
@@ -1240,6 +1802,10 @@ client.on("messageCreate", async (message) => {
   try {
     if (!message.guild) return;
     if (message.author.bot) return;
+
+    // Aktiflik istatistiği: her mesajda (komut olsun olmasın) son mesaj zamanını güncelle
+    touchLastMessage(message.author.id);
+
     if (!message.content.startsWith(PREFIX)) return;
 
     const guild = message.guild;
@@ -1395,7 +1961,12 @@ if (cmd === "rollimit") {
       "otyetki",
       "otreset",
       "otlogkur",
-      "yetkili"
+      "yetkili",
+      "aktifliklogkur",
+      "ekiprolkur",
+      "newrolkur",
+      "banafflogkur",
+      "banaffpanel"
     ]);
 
     if (!PUBLIC.has(cmd)) {
@@ -1610,6 +2181,8 @@ if (cmd === "yetkili") {
 
     
 // ===================== AKTIFLIK =====================
+// Kullanım: .aktiflik @rol <süre>
+// Örnek:    .aktiflik @Upstar 3g
 if (cmd === "aktiflik") {
 
   if (!isStaff(userId)) {
@@ -1622,32 +2195,142 @@ if (cmd === "aktiflik") {
     );
   }
 
-  const embed = createEmbed(guild, {
-    title: `${EMOJI.star} ・ ᴀᴋᴛɪꜰʟɪᴋ ᴋᴀᴛɪʟɪᴍ`,
-    description:
-      `${EMOJI.settings} ・ Aşağıdaki butona basarak aktiflik al.\n\n` +
-      `${EMOJI.sagok} ・ **Katılanlar (0)**`,
-  });
+  const role = message.mentions.roles.first();
+  const durationArg = args.find((a) => /\d/.test(a) && !a.startsWith("<@&"));
+  const durationMs = durationArg ? parseDurationToMs(durationArg) : null;
 
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("temp")
-      .setLabel("Katıldım")
-      .setStyle(ButtonStyle.Success)
-      .setEmoji("✅")
-  );
+  if (!role || !durationMs || durationMs <= 0) {
+    return replyE(
+      message,
+      createEmbed(guild, {
+        title: line(EMOJI.info, "ᴋᴜʟʟᴀɴɪᴍ"),
+        description:
+          `${line(EMOJI.right, `${PREFIX}aktiflik @rol <süre>`)}\n` +
+          `${line(EMOJI.right, `${PREFIX}aktiflik @Upstar 3g`)}\n\n` +
+          `${EMOJI.info} ・ Süre örnekleri: \`30dk\`, \`2sa\`, \`1g 2sa\`, \`3g\`\n` +
+          `${EMOJI.warn} ・ Katılmayanların listelendiği kanalı ayarlamak için: \`${PREFIX}aktifliklogkur #kanal\``
+      })
+    );
+  }
+
+  const endsAt = Date.now() + durationMs;
+  const data = {
+    roleId: role.id,
+    durationMs,
+    endsAt,
+    joined: new Set(),
+    closed: false,
+    timer: null,
+    channelId: message.channel.id,
+    guildId: guild.id
+  };
 
   const msg = await message.channel.send({
-    embeds: [embed],
-    components: [row]
+    content: `${role}`,
+    embeds: [aktiflikEmbed(guild, data)],
+    components: [aktiflikRows(false)]
   });
 
-  row.components[0].setCustomId(`aktiflik_join_${msg.id}`);
+  aktiflikList.set(msg.id, data);
 
-  await msg.edit({
-    components: [row]
-  });
+  data.timer = setTimeout(() => {
+    closeAktiflik(guild, msg.id, "Süre doldu").catch(() => {});
+  }, durationMs);
+
+  if (!aktiflikLogChannelId) {
+    await replyE(
+      message,
+      createEmbed(guild, {
+        title: line(EMOJI.warn, "ᴜʏᴀʀɪ"),
+        description:
+          `${EMOJI.success} ・ Aktiflik testi başlatıldı.\n` +
+          `${EMOJI.warn} ・ Ancak log kanalı ayarlı değil — test bitince katılmayanlar hiçbir kanala listelenmeyecek.\n` +
+          `${EMOJI.right} ・ Ayarlamak için: \`${PREFIX}aktifliklogkur #kanal\``
+      })
+    );
+  }
 }
+
+    // ===================== AKTİFLİK LOG KANALI AYARLA =====================
+    if (cmd === "aktifliklogkur") {
+      if (!isOwner(userId)) {
+        return replyE(message, createEmbed(guild, {
+          title: line(EMOJI.lock, "ʏᴇᴛᴋɪ ʏᴏᴋ"),
+          description: line(EMOJI.warn, "ꜱᴀᴅᴇᴄᴇ ᴏᴡɴᴇʀ")
+        }));
+      }
+
+      const ch = message.mentions.channels.first();
+      if (!ch || ch.type !== ChannelType.GuildText) {
+        return replyE(message, createEmbed(guild, {
+          title: line(EMOJI.info, "ᴋᴜʟʟᴀɴɪᴍ"),
+          description: line(EMOJI.right, `${PREFIX}aktifliklogkur #kanal`)
+        }));
+      }
+
+      aktiflikLogChannelId = ch.id;
+      config.aktiflikLogChannelId = ch.id;
+      saveJSON(CONFIG_FILE, config);
+
+      return replyE(message, createEmbed(guild, {
+        title: line(EMOJI.success, "ᴋᴀʏᴅᴇᴅɪʟᴅɪ"),
+        description: `${EMOJI.success} ・ Aktiflik log kanalı ${ch} olarak ayarlandı.`
+      }));
+    }
+
+    // ===================== BAŞVURU: EKİP ROLÜ AYARLA =====================
+    if (cmd === "ekiprolkur") {
+      if (!isOwner(userId)) {
+        return replyE(message, createEmbed(guild, {
+          title: line(EMOJI.lock, "ʏᴇᴛᴋɪ ʏᴏᴋ"),
+          description: line(EMOJI.warn, "ꜱᴀᴅᴇᴄᴇ ᴏᴡɴᴇʀ")
+        }));
+      }
+
+      const role = message.mentions.roles.first();
+      if (!role) {
+        return replyE(message, createEmbed(guild, {
+          title: line(EMOJI.info, "ᴋᴜʟʟᴀɴɪᴍ"),
+          description: line(EMOJI.right, `${PREFIX}ekiprolkur @rol`)
+        }));
+      }
+
+      ekipRoleId = role.id;
+      config.ekipRoleId = role.id;
+      saveJSON(CONFIG_FILE, config);
+
+      return replyE(message, createEmbed(guild, {
+        title: line(EMOJI.success, "ᴋᴀʏᴅᴇᴅɪʟᴅɪ"),
+        description: `${EMOJI.success} ・ Başvuru kabul edilince verilecek ekip rolü ${role} olarak ayarlandı.`
+      }));
+    }
+
+    // ===================== BAŞVURU: NEW ROLÜ AYARLA =====================
+    if (cmd === "newrolkur") {
+      if (!isOwner(userId)) {
+        return replyE(message, createEmbed(guild, {
+          title: line(EMOJI.lock, "ʏᴇᴛᴋɪ ʏᴏᴋ"),
+          description: line(EMOJI.warn, "ꜱᴀᴅᴇᴄᴇ ᴏᴡɴᴇʀ")
+        }));
+      }
+
+      const role = message.mentions.roles.first();
+      if (!role) {
+        return replyE(message, createEmbed(guild, {
+          title: line(EMOJI.info, "ᴋᴜʟʟᴀɴɪᴍ"),
+          description: line(EMOJI.right, `${PREFIX}newrolkur @rol`)
+        }));
+      }
+
+      newRoleId = role.id;
+      config.newRoleId = role.id;
+      saveJSON(CONFIG_FILE, config);
+
+      return replyE(message, createEmbed(guild, {
+        title: line(EMOJI.success, "ᴋᴀʏᴅᴇᴅɪʟᴅɪ"),
+        description: `${EMOJI.success} ・ Başvuru kabul edilince verilecek new rolü ${role} olarak ayarlandı.`
+      }));
+    }
 
     // ===================== TEST =====================
     if (cmd === "test") {
@@ -1850,7 +2533,7 @@ if (cmd === "nuke") {
   newChannel.send({
     embeds: [
       createEmbed(guild, {
-        title: line(EMOJI.fire, "ɴᴜᴋᴇ"),
+        title: line(EMOJI.warn, "ɴᴜᴋᴇ"),
         description: `${EMOJI.success} Kanal başarıyla temizlendi`
       })
     ]
@@ -1899,6 +2582,21 @@ if (cmd === "nuke") {
             `**${line(EMOJI.crown, "ʏᴇᴛᴋɪʟɪ (ꜱᴛᴀꜰꜰ)")}**\n` +
             `${line(EMOJI.right, `${PREFIX}yetkili @kullanıcı ekle/kaldır`)}\n` +
             `${line(EMOJI.right, `${PREFIX}yetkili liste`)}\n\n` +
+
+            `**${line(EMOJI.success, "ʙᴀşᴠᴜʀᴜ ꜱɪꜱᴛᴇᴍɪ")}**\n` +
+            `${line(EMOJI.right, `${PREFIX}ticketkategori <kategoriID>`)}\n` +
+            `${line(EMOJI.right, `${PREFIX}basvurupanel @yetkilirol`)}\n` +
+            `${line(EMOJI.right, `${PREFIX}ekiprolkur @rol`)}\n` +
+            `${line(EMOJI.right, `${PREFIX}newrolkur @rol`)}\n\n` +
+
+            `**${line(EMOJI.star, "ᴀᴋᴛɪꜰʟɪᴋ ᴛᴇꜱᴛɪ")}**\n` +
+            `${line(EMOJI.right, `${PREFIX}aktiflik @rol <süre>`)}\n` +
+            `${line(EMOJI.right, `${PREFIX}aktifliklogkur #kanal`)}\n\n` +
+
+            `**${line(EMOJI.ban, "ʙᴀɴ ᴀꜰꜰɪ")}**\n` +
+            `${line(EMOJI.right, `${PREFIX}banaffpanel`)}\n` +
+            `${line(EMOJI.right, `${PREFIX}banafflogkur #kanal`)}\n` +
+            `${line(EMOJI.right, `${PREFIX}ban-list`)}\n\n` +
 
             `**${line(EMOJI.star, "şᴀᴋᴀ")}**\n` +
             `${line(EMOJI.right, `${PREFIX}patlat`)}\n\n` +
@@ -2046,6 +2744,75 @@ if (cmd === "nuke") {
       );
     }
 
+    // ===================== BAN AFFI: LOG KANALI AYARLA =====================
+    if (cmd === "banafflogkur") {
+      if (!isOwner(userId)) {
+        return replyE(message, createEmbed(guild, {
+          title: line(EMOJI.lock, "ʏᴇᴛᴋɪ ʏᴏᴋ"),
+          description: line(EMOJI.warn, "ꜱᴀᴅᴇᴄᴇ ᴏᴡɴᴇʀ")
+        }));
+      }
+
+      const ch = message.mentions.channels.first();
+      if (!ch || ch.type !== ChannelType.GuildText) {
+        return replyE(message, createEmbed(guild, {
+          title: line(EMOJI.info, "ᴋᴜʟʟᴀɴɪᴍ"),
+          description: line(EMOJI.right, `${PREFIX}banafflogkur #kanal`)
+        }));
+      }
+
+      banAffLogChannelId = ch.id;
+      config.banAffLogChannelId = ch.id;
+      saveJSON(CONFIG_FILE, config);
+
+      return replyE(message, createEmbed(guild, {
+        title: line(EMOJI.success, "ᴋᴀʏᴅᴇᴅɪʟᴅɪ"),
+        description: `${EMOJI.success} ・ Ban affı bildirim kanalı ${ch} olarak ayarlandı.`
+      }));
+    }
+
+    // ===================== BAN AFFI: PANEL KUR =====================
+    if (cmd === "banaffpanel") {
+      const panelEmbed = createEmbed(guild, {
+        title: `${EMOJI.ban} ・ ʙᴀɴ ᴀꜰꜰɪ ʙᴇᴋʟᴇʏᴇɴʟᴇʀ`,
+        description:
+          `${EMOJI.right} ・ Ekibimizde banlı olan kişiler için banları daha düzenli tutmak için banları artık buradan gönderiyoruz.`,
+        image: TICKET_BANNER_URL
+      });
+
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("banaff_open")
+          .setLabel("Banlıyım!")
+          .setStyle(ButtonStyle.Secondary)
+          .setEmoji("📝")
+      );
+
+      await message.channel.send({ embeds: [panelEmbed], components: [row] }).catch(() => {});
+
+      return replyE(
+        message,
+        createEmbed(guild, {
+          title: line(EMOJI.success, "ᴘᴀɴᴇʟ ɢᴏ̈ɴᴅᴇʀɪʟᴅɪ"),
+          description: line(EMOJI.info, "Ban affı paneli kuruldu.")
+        })
+      );
+    }
+
+    // ===================== BAN LİST =====================
+    if (cmd === "ban-list" || cmd === "banlist") {
+      if (!isStaff(userId)) {
+        return replyE(message, createEmbed(guild, {
+          title: line(EMOJI.lock, "ʏᴇᴛᴋɪ ʏᴏᴋ"),
+          description: line(EMOJI.warn, "Sadece yetkililer.")
+        }));
+      }
+
+      return replyE(message, banListEmbed(guild, 1)).then(async (sent) => {
+        if (sent) await sent.edit({ components: [banListRows(1)] }).catch(() => {});
+      });
+    }
+
     // ===================== OTLOGKUR =====================
     if (cmd === "otlogkur") {
       const ch = message.mentions.channels.first();
@@ -2102,7 +2869,7 @@ if (cmd === "etkinlik") {
     title: `${EMOJI.star} ・ ${titleText}`,
     description:
       `${EMOJI.settings} ・ Katılmak için butona bas.\n\n` +
-      `${EMOJI.sagok} ・ **Katılanlar (0/${limit})**`,
+      `${EMOJI.right} ・ **Katılanlar (0/${limit})**`,
   });
 
   const row = new ActionRowBuilder().addComponents(
@@ -2589,7 +3356,7 @@ if (cmd === "urlkoruma") {
     title: line(EMOJI.shield, "ᴜʀʟ ᴋᴏʀᴜᴍᴀ"),
     description: urlProtection.enabled
       ? `${EMOJI.success} URL koruma **AÇILDI**\n${EMOJI.warn} URL değiştiren **ANINDA BANLANIR**`
-      : `${EMOJI.error} URL koruma **KAPATILDI**`
+      : `${EMOJI.warn} URL koruma **KAPATILDI**`
   }));
 }
     // ===================== GUARD PANEL =====================
@@ -2699,10 +3466,10 @@ client.on("roleUpdate", async (oldRole, newRole) => {
 
 
 // ===================== LOGIN =====================
-client.login(TOKEN)
+initMongo()
+  .then(() => client.login(TOKEN))
   .then(() => console.log("✅ Discord Login OK"))
   .catch((err) => console.error("❌ Discord Login FAIL:", err));
-
 
 
 
